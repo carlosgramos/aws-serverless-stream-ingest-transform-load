@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
-S3Bucket=BUCKET_NAME
-REGION=REGION_NAME
+
+# echo 'Please enter the bucket cloudformation will use to upload artifacts: '
+# read S3Bucket 
+
+# echo 'Please enter the AWS region where you will depploy the stacks: '
+# read REGION
+
+S3Bucket='firehose-micro-arch-artifacts-82019'
+REGION='us-east-1'
 
 FILE="$(uuidgen).yaml"
 PREFIX=serverless/firehose

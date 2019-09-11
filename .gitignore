@@ -1,1 +1,8 @@
 .env/
+lambda/*
+!lambda/setup.cfg
+!lambda/requirements.txt
+!lambda/firehoseIngest.py
+!lambda/firehoseTransform.py
+
+
