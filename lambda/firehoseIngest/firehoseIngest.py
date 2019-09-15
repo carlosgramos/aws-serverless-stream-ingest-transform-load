@@ -22,10 +22,7 @@ def lambda_handler(event, context):
     try:
         s3_response = s3.get_object(Bucket=bucket, Key=key)
         
-        #Build logic to send txt file with station ID/names to glue for processing
-        #If S3 object key contains .txt, then send to glue
-        
-        #Build logic to send weather data to kinesis firehose for possible ETL
+        #Send s3 object to Kinesis. The service will encode it with base64.
         kinesis_response = kinesis.put_record(
             DeliveryStreamName=delivery_stream,
             Record={
@@ -34,7 +31,6 @@ def lambda_handler(event, context):
         )
         
         print(kinesis_response)
-        
         return 'Records ingested into Firehose.'
     except Exception as e:
         print(e)

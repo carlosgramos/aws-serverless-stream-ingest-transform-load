@@ -26,26 +26,21 @@ Resources:
     Type: AWS::S3::Bucket
     DeletionPolicy: Delete
     Properties:
+      BucketName: !Sub 'firehose-ingest-${AWS::AccountId}'
       AccessControl: Private
-  
-  rOutputBucket:
-    Type: AWS::S3::Bucket
-    DeletionPolicy: Delete
-    Properties:
-      AccessControl: Private
-  
+      
   rIngestStream:
     Type: AWS::KinesisFirehose::DeliveryStream
     Properties:
       DeliveryStreamName: 'IngestStream'
       DeliveryStreamType: 'DirectPut'
       ExtendedS3DestinationConfiguration:
-        RoleARN: !GetAtt FirehoseDeliveryRole.Arn
-        BucketARN: !GetAtt OutputBucket.Arn
+        RoleARN: !GetAtt rFirehoseServiceRole.Arn
+        BucketARN: !GetAtt rOutputBucket.Arn
         Prefix: 'transformed/'
         BufferingHints:
-          SizeInMBs: !Ref FirehoseBufferSize
-          IntervalInSeconds: !Ref FirehoseBufferInterval
+          SizeInMBs: !Ref pFirehoseBufferSize
+          IntervalInSeconds: !Ref pFirehoseBufferInterval
         CompressionFormat: 'UNCOMPRESSED'
         ProcessingConfiguration:
           Enabled: true
@@ -53,31 +48,14 @@ Resources:
             - Type: 'Lambda'
               Parameters:
                 - ParameterName: 'LambdaArn'
-                  ParameterValue: !GetAtt FirehoseTransform.Arn
+                  ParameterValue: !GetAtt rFirehoseTransformFunction.Arn
         CloudWatchLoggingOptions:
           Enabled: true
           LogGroupName: '/aws/kinesisfirehose/IngestStream'
           LogStreamName: S3Delivery
-
-  # This needs to be a separate policy as it references IngestStream.
-  # This avoids a circular dependency between IngestStream and FirehoseDeliveryRole
-  rCWLPutLogs:
-    Type: AWS::IAM::Policy
-    Properties:
-      PolicyName: CWL_PutLogs
-      PolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-        - Effect: Allow
-          Action:
-          - logs:PutLogEvents
-          Resource:
-          - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/kinesisfirehose/${IngestStream}:log-stream:*'
-      Roles:
-      - !Ref FirehoseDeliveryRole
-
-  #Firehose needs access to our S3 Output bucket
-  rFirehoseS3DeliveryRole:
+  
+  #Firehose needs permissions for the S3 Output bucket and to call its own Lambda transform function
+  rFirehoseServiceRole:
     Type: AWS::IAM::Role
     Properties:
       Path: /
@@ -102,7 +80,7 @@ Resources:
             - lambda:InvokeFunction
             - lambda:GetFunctionConfiguration
             Resource:
-            - !GetAtt FirehoseTransform.Arn
+            - !GetAtt rFirehoseTransformFunction.Arn
       - PolicyName: S3_ReadWrite_OutputBucket
         PolicyDocument:
           Version: '2012-10-17'
@@ -116,16 +94,46 @@ Resources:
             - s3:ListBucketMultipartUploads
             - s3:PutObject
             Resource:
-            - !Sub 'arn:aws:s3:::${rOutputBucket}/*'
-            - !Sub 'arn:aws:s3:::${rOutputBucket}'
-
+            - !Sub 'arn:aws:s3:::firehose-output-${AWS::AccountId}/*'
+            - !Sub 'arn:aws:s3:::firehose-output-${AWS::AccountId}'
+            
+  # This avoids a circular dependency between rIngestStream and rFirehoseServiceRole
+  rCWLPutLogs:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: CWL_PutLogs
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action:
+          - logs:PutLogEvents
+          Resource:
+          - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/kinesisfirehose/${rIngestStream}:log-stream:*'
+      Roles:
+      - !Ref rFirehoseServiceRole
+      
+  rFirehoseLambdaLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: firehose-pipeline-dependencies
+      Description: Dependencies for sam firehose pipeline functions
+      ContentUri: lambda-layer/python
+      CompatibleRuntimes:
+        - python3.7
+      LicenseInfo: 'MIT'
+      RetentionPolicy: Retain
+  
+  #Both the stream and the ingest S3 bucket must be created first
   rFirehoseIngestFunction:
     Type: AWS::Serverless::Function
     Properties:
       Handler: firehoseIngest.lambda_handler
+      Layers: 
+        - !Ref rFirehoseLambdaLayer
       Runtime: python3.6
-      CodeUri: lambda/
-      FunctionName: FirehoseTransform
+      CodeUri: lambda/firehoseIngest/
+      FunctionName: rFirehoseIngetstFunction
       Description: Triggered by an S3 put event, it feeds data into Firehose 
       MemorySize: 1536
       Timeout: 300
@@ -141,8 +149,8 @@ Resources:
             - s3:GetObject
             - s3:ListBucket
             Resource:
-            - !Sub 'arn:aws:s3:::${rIngestBucket}/*'
-            - !Sub 'arn:aws:s3:::${rIngestBucket}'
+            - !Sub 'arn:aws:s3:::firehose-ingest-${AWS::AccountId}/*'
+            - !Sub 'arn:aws:s3:::firehose-ingest-${AWS::AccountId}'
           - Effect: Allow
             Action:
             - firehose:PutRecord
@@ -151,18 +159,21 @@ Resources:
         Variables:
           INGEST_STREAM: !Ref rIngestStream
       Events:
-        Type: 'S3'
-        Properties:
-          Bucket: !Ref rIngestBucket
-          Events: s3:ObjectCreated:*
+        FileUpload:
+          Type: 'S3'
+          Properties:
+            Bucket: !Ref rIngestBucket
+            Events: s3:ObjectCreated:*
   
   rFirehoseTransformFunction:
     Type: AWS::Serverless::Function
     Properties:
       Handler: firehoseTransform.lambda_handler
+      Layers: 
+        - !Ref rFirehoseLambdaLayer
       Runtime: python3.6
-      CodeUri: lambda/
-      FunctionName: FirehoseTransform
+      CodeUri: lambda/firehoseTransform/
+      FunctionName: rFirehoseTransform
       Description: Transforms and enriches messages ingested by a Firehose delivery stream
       MemorySize: 1536
       Timeout: 300
@@ -170,17 +181,22 @@ Resources:
       Policies:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
         - arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess
-        - Version: '2012-10-17'
-          Statement:
-          - Effect: Allow
-            Action:
-            - firehose:PutRecord
-            Resource: !GetAtt rIngestStream.Arn
+  
+  rOutputBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      BucketName: !Sub 'firehose-output-${AWS::AccountId}'
+      AccessControl: Private
 
+# This needs to be a separate policy as it references IngestStream.
 Outputs:
+  oIngestBucketName:
+    Value: !Ref 'rIngestBucket'
+    Description: S3 bucket for ingesting records
   oOutputBucketName:
     Value: !Ref 'rOutputBucket'
-    Description: S3 bucket for transformed records and source record backups
+    Description: S3 bucket for transformed records
   oFirehoseIngestFunction:
     Value: !Ref 'rFirehoseIngestFunction'
     Description: Name of FirehoseIngest Lambda function
