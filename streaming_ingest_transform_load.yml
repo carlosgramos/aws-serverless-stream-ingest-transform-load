@@ -54,7 +54,7 @@ Resources:
           LogGroupName: '/aws/kinesisfirehose/IngestStream'
           LogStreamName: S3Delivery
   
-  #Firehose needs permissions for the S3 Output bucket and to call its own Lambda transform function
+  #Firehose needs permissions to write to the S3 Output bucket
   rFirehoseServiceRole:
     Type: AWS::IAM::Role
     Properties:
@@ -97,7 +97,7 @@ Resources:
             - !Sub 'arn:aws:s3:::firehose-output-${AWS::AccountId}/*'
             - !Sub 'arn:aws:s3:::firehose-output-${AWS::AccountId}'
             
-  # This avoids a circular dependency between rIngestStream and rFirehoseServiceRole
+  #This avoids a circular dependency between rIngestStream and rFirehoseServiceRole
   rCWLPutLogs:
     Type: AWS::IAM::Policy
     Properties:
@@ -113,6 +113,7 @@ Resources:
       Roles:
       - !Ref rFirehoseServiceRole
       
+  #Satisfies requirements.txt
   rFirehoseLambdaLayer:
     Type: AWS::Serverless::LayerVersion
     Properties:
@@ -124,7 +125,7 @@ Resources:
       LicenseInfo: 'MIT'
       RetentionPolicy: Retain
   
-  #Both the stream and the ingest S3 bucket must be created first
+  #Both the Kinesis stream and the ingest S3 bucket must be created first
   rFirehoseIngestFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -189,7 +190,6 @@ Resources:
       BucketName: !Sub 'firehose-output-${AWS::AccountId}'
       AccessControl: Private
 
-# This needs to be a separate policy as it references IngestStream.
 Outputs:
   oIngestBucketName:
     Value: !Ref 'rIngestBucket'
